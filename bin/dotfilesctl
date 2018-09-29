@@ -1,0 +1,230 @@
+#! /bin/env bash
+
+#
+# dotfiles management script
+#
+
+SETUPS=()
+PACKAGES=()
+
+declare -A CONFIG
+CONFIG[REPO_PATH]=
+
+## HELPER FUNCTIONS ##
+
+#
+# Error display
+#
+err() {
+  echo "ERROR: $@" >&2
+}
+
+#
+# Get list of setups
+#
+get_setups() {
+  for entry in $(ls ${CONFIG[REPO_PATH]}); do
+    [[ -d "${CONFIG[REPO_PATH]}"/$entry ]] && SETUPS[${#SETUPS[*]}]=$entry
+  done
+}
+
+#
+# Get list of packages for given setup
+#
+get_packages() {
+  local repo_path=${CONFIG[REPO_PATH]}
+  local setup=$1
+  local pkg_dir=
+  for entry in $(ls "$repo_path/$setup"); do
+    pkg_dir="$repo_path/$setup/$entry"
+    [[ -d $pkg_dir ]] && PACKAGES[${#PACKAGES[*]}]=$entry
+  done
+}
+
+array_contains() {
+  local item=$1
+  shift
+  local arr=$@
+  for i in ${arr[*]}; do
+    [[ $item == $i ]] && return 0
+  done
+  return 1
+}
+
+assoc_array_has_key() {
+  local assoc_arr_def=$(declare -p "$1")
+  eval "declare -A local assoc_arr="${assoc_arr_def#*=} > /dev/null
+  local key=$2
+  [ -z ${assoc_arr[key]+"check"} ]
+}
+
+check_extra_args() {
+  if [[ $# > 0 ]]; then
+    err "Unrecognized extra arguments $@"
+    return 1
+  fi
+}
+
+read_config() {
+  if [ -z $XDG_CONFIG_HOME ]; then
+    local CONFIG_FILE="$HOME"/.config/dotfilesctl/config
+  else
+    local CONFIG_FILE="$XDG_CONFIG_HOME"/dotfilesctl/config
+  fi
+  if [ -f $CONFIG_FILE ]; then
+    IFS_BACKUP=$IFS
+    while IFS='=' read key value; do
+      IFS=$IFS_BACKUP
+      assoc_array_has_key CONFIG REPO_PATH && CONFIG[$key]="$value"
+    done < $CONFIG_FILE
+  fi
+}
+
+check_repo_path() {
+  [[ -n ${CONFIG[REPO_PATH]} ]] ||
+  err "Please configure REPO_PATH via dotfilesctl config REPO_PATH=/path/to/repo"
+}
+
+## ACTIONS ##
+
+#
+# Action: help
+# Displays usage
+#
+help() {
+  cat << EOF
+dotfiles management utility
+
+Usage
+  dotfilesctl list-setups
+  dotfilesctl list-packages <setup>
+  dotfilesctl list-files <setup> <package>
+  dotfilesctl track <setup> <package> <file>...
+  dotfilesctl deploy <setup>
+  dotfilesctl list-deployments
+  dotfilesctl clone <source_setup> <target_setup> [<package>...]
+  dotfilesctl [help]
+EOF
+}
+
+#
+# Action: list-setups
+# List available setups
+#
+list-setups() {
+  check_extra_args $* || return 1
+  get_setups && echo $SETUPS
+}
+
+#
+# Action: list-packages
+# List available packages in given setup
+#
+list-packages() {
+  local setup=$1
+  if [[ -z $setup ]]; then
+    err "Missing required setup param"
+    return 1
+  fi
+  shift && check_extra_args $* || return 1
+  get_setups
+  array_contains $setup ${SETUPS[*]}
+  if [[ $? == 1 ]]; then
+    err "$setup is not a valid setup"
+    return 1
+  fi
+  get_packages $setup &&
+  echo ${PACKAGES[*]}
+}
+
+path_relative_to_dir() {
+  local dir=$(realpath $1)
+  local path=$(realpath -s $2)
+  if ! [[ ${path:0:${#dir}} == ${dir} ]]; then
+    err "$2 is not (a file in) a subfolder of $1"
+    return 1
+  fi
+  local substr=${path:${#dir}+1}
+  if [[ -z $substr ]]; then
+    err "You cannot track the entire HOME dir"
+    return 1
+  fi
+  echo ${substr}
+}
+
+#
+# Action: track
+# Copies one or many files from the HOME dir to a specific package and setup in the repo.
+#
+track() {
+  SETUP=$1
+  if [[ -z $SETUP ]]; then
+    err "Missing required setup param"
+    return 1
+  fi
+  get_setups &&
+  array_contains $SETUP ${SETUPS[*]}
+  if [[ $? == 1 ]]; then
+    err "$SETUP is not a valid setup"
+    return 1
+  fi
+  shift
+  PACKAGE=$1
+  if [[ -z $PACKAGE ]]; then
+    err "Missing required package param"
+    return 1
+  fi
+  shift
+  FILES=($@)
+  REL_FILES=()
+  DEST_DIR="${CONFIG[REPO_PATH]}/$SETUP/$PACKAGE"
+  if [[ $# == 0 ]]; then
+    err "No files were provided"
+    return 1
+  fi
+  local REL_FILE
+  for file in ${FILES[@]}; do
+    if ! ([[ -f $file ]] || [[ -d $file ]]); then
+      err "$file is neither a file nor a directory"
+      return 1
+    fi
+    REL_FILE="$(path_relative_to_dir $HOME $file)" || return $?
+    REL_FILES[${#REL_FILES[@]}]="$REL_FILE"
+  done
+  local track_source
+  local track_target
+  for ((i=0;i<${#FILES[@]};i++)); do
+    track_source=$(realpath -s "${FILES[$i]}")
+    track_target=$(dirname "${DEST_DIR}/${REL_FILES[$i]}")
+    mkdir -p "${track_target}" &&
+    cp -rd "$track_source" "$track_target" &&
+    echo "Copied ${track_source} to ${track_target} ..."
+  done
+}
+
+#
+# Entry point
+#
+main() {
+  # Read config file
+  read_config
+  # Retrieve action from params and launch function
+  local ACTION=${1:-help}
+  shift
+  case $ACTION in
+    config | help)
+      $ACTION $@ || (help && exit 1)
+      ;;
+    list-setups | list-packages | list-files | track | deploy | clone | config)
+      check_repo_path &&
+      $ACTION $@ || (help; exit 1)
+      ;;
+    *)
+      err "$ACTION is not a valid action."
+      help
+      exit 1
+      ;;
+  esac
+}
+
+main $@
