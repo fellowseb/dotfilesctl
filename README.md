@@ -1,12 +1,12 @@
 # Dotfiles management system
 
 ## Installation
-``bash
+```bash
 ./install.sh
-``
+```
 
 ## Usage
-``bash
+```bash
 #Configure setups repo path 
 dotfilesctl config repo=/path/to/repo
 #List setups
@@ -15,9 +15,9 @@ dotfilesctl list-setups
 dotfilesctl deploy <setup>
 #List deployments
 dotfilesctl list-deployments
-``
+```
 
 ## Help
-``bash
+```bash
 dotfilesctl help
-``
+```
