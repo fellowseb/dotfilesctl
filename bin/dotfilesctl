@@ -23,7 +23,7 @@ err() {
 # Get list of setups
 #
 get_setups() {
-  for entry in $(ls ${CONFIG[REPO_PATH]}); do
+  for entry in $(command ls ${CONFIG[REPO_PATH]}); do
     [[ -d "${CONFIG[REPO_PATH]}"/$entry ]] && SETUPS[${#SETUPS[*]}]=$entry
   done
 }
@@ -35,7 +35,7 @@ get_packages() {
   local repo_path=${CONFIG[REPO_PATH]}
   local setup=$1
   local pkg_dir=
-  for entry in $(ls "$repo_path/$setup"); do
+  for entry in $(command ls "$repo_path/$setup"); do
     pkg_dir="$repo_path/$setup/$entry"
     [[ -d $pkg_dir ]] && PACKAGES[${#PACKAGES[*]}]=$entry
   done
@@ -66,11 +66,7 @@ check_extra_args() {
 }
 
 read_config() {
-  if [ -z $XDG_CONFIG_HOME ]; then
-    local CONFIG_FILE="$HOME"/.config/dotfilesctl/config
-  else
-    local CONFIG_FILE="$XDG_CONFIG_HOME"/dotfilesctl/config
-  fi
+  local CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}"/dotfilesctl/config
   if [ -f $CONFIG_FILE ]; then
     IFS_BACKUP=$IFS
     while IFS='=' read key value; do
@@ -96,13 +92,15 @@ help() {
 dotfiles management utility
 
 Usage
-  dotfilesctl list-setups
-  dotfilesctl list-packages <setup>
-  dotfilesctl list-files <setup> <package>
+  dotfilesctl setups
+  dotfilesctl packages <setup>
+  dotfilesctl ls <setup> [<package>...]
   dotfilesctl track <setup> <package> <file>...
-  dotfilesctl deploy <setup>
-  dotfilesctl list-deployments
-  dotfilesctl clone <source_setup> <target_setup> [<package>...]
+  dotfilesctl add <file>...
+  dotfilesctl checkout [-f] <file>...
+  dotfilesctl deploy [-f] <setup> [<package>...]
+  dotfilesctl backups
+  dotfilesctl clone <source_setup> <target_setup> [<package>...] [-e <package>...]
   dotfilesctl [help]
 EOF
 }
@@ -111,7 +109,7 @@ EOF
 # Action: list-setups
 # List available setups
 #
-list-setups() {
+setups() {
   check_extra_args $* || return 1
   get_setups && echo $SETUPS
 }
@@ -120,7 +118,7 @@ list-setups() {
 # Action: list-packages
 # List available packages in given setup
 #
-list-packages() {
+packages() {
   local setup=$1
   if [[ -z $setup ]]; then
     err "Missing required setup param"
@@ -150,6 +148,62 @@ path_relative_to_dir() {
     return 1
   fi
   echo ${substr}
+}
+
+#
+# Action: ls
+# List dotfiles paths
+#
+ls() {
+  SETUP=$1
+  shift
+  if [[ -z $SETUP ]]; then
+    err "Missing required setup param"
+    return 1
+  fi
+  get_setups &&
+  array_contains $SETUP ${SETUPS[*]}
+  if [[ $? == 1 ]]; then
+    err "$SETUP is not a valid setup"
+    return 1
+  fi
+  local ls_package=()
+  if [[ -n $1 ]]; then
+    get_packages $SETUP
+    local pkg=
+    while [[ $# > 0 ]]; do
+      pkg=$1
+      shift
+      array_contains $pkg ${PACKAGES[*]}
+      if [[ $? == 1 ]]; then
+        err "$pkg is not a valid package"
+        return 1
+      fi
+      ls_packages[${#ls_packages}]=$pkg
+    done
+  else
+    get_packages $SETUP
+    ls_packages=${PACKAGES[*]}
+  fi
+  local current_dir=
+  local lsed_items=()
+  local pkg_dir=
+  local ls_rec_output=()
+  local tmp=
+  for package in ${ls_packages[*]}; do
+    pkg_dir="${CONFIG[REPO_PATH]}/${SETUP}/$package"
+    ls_rec_output=($(command ls -RAB $pkg_dir))
+    for ls_rec_item in ${ls_rec_output[*]}; do
+      ((tmp=${#ls_rec_item}-1))
+      if [[ ${ls_rec_item:$tmp} == ':' ]]; then
+        current_dir=${ls_rec_item:0:$tmp}
+      else
+        tmp="${current_dir}/${ls_rec_item}"
+        lsed_items[${#lsed_items[*]}]=${tmp:${#pkg_dir}+1}
+      fi
+    done
+  done  
+  echo ${lsed_items[*]} | tr ' ' \\n | sort -u
 }
 
 #
@@ -215,7 +269,7 @@ main() {
     config | help)
       $ACTION $@ || (help && exit 1)
       ;;
-    list-setups | list-packages | list-files | track | deploy | clone | config)
+    setups | packages | ls | track | add | checkout | deploy | backups | clone | config)
       check_repo_path &&
       $ACTION $@ || (help; exit 1)
       ;;
