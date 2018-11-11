@@ -1,36 +1,38 @@
 #! /bin/env bash
 
-#
 # dotfiles management script
-#
+
+# Options
+OPTION_SETUP=
+OPTION_PACKAGES=()
+OPTION_FORCE=0
+REST_ARGS=
 
 SETUPS=()
+SETUP=
 PACKAGES=()
+PACKAGE=
+FILES_IN_REPO_PATH=()
+FILES_IN_REPO_PACKAGE=()
 
 declare -A CONFIG
 CONFIG[REPO_PATH]=
 
 ## HELPER FUNCTIONS ##
 
-#
 # Error display
-#
 err() {
   echo "ERROR: $@" >&2
 }
 
-#
 # Get list of setups
-#
 get_setups() {
   for entry in $(command ls ${CONFIG[REPO_PATH]}); do
     [[ -d "${CONFIG[REPO_PATH]}"/$entry ]] && SETUPS[${#SETUPS[*]}]=$entry
   done
 }
 
-#
 # Get list of packages for given setup
-#
 get_packages() {
   local repo_path=${CONFIG[REPO_PATH]}
   local setup=$1
@@ -78,61 +80,14 @@ read_config() {
 
 check_repo_path() {
   [[ -n ${CONFIG[REPO_PATH]} ]] ||
-  err "Please configure REPO_PATH via dotfilesctl config REPO_PATH=/path/to/repo"
+  (
+    err "Please configure REPO_PATH via dotfilesctl config REPO_PATH=/path/to/repo"
+    return 99
+  )
 }
 
-## ACTIONS ##
-
-#
-# Action: help
-# Displays usage
-#
-help() {
-  cat << EOF
-dotfiles management utility
-
-Usage
-  dotfilesctl setups
-  dotfilesctl packages <setup>
-  dotfilesctl ls <setup> [<package>...]
-  dotfilesctl track <setup> <package> <file>...
-  dotfilesctl add <file>...
-  dotfilesctl checkout [-f] <file>...
-  dotfilesctl deploy [-f] <setup> [<package>...]
-  dotfilesctl backups
-  dotfilesctl clone <source_setup> <target_setup> [<package>...] [-e <package>...]
-  dotfilesctl [help]
-EOF
-}
-
-#
-# Action: list-setups
-# List available setups
-#
-setups() {
-  check_extra_args $* || return 1
-  get_setups && echo $SETUPS
-}
-
-#
-# Action: list-packages
-# List available packages in given setup
-#
-packages() {
-  local setup=$1
-  if [[ -z $setup ]]; then
-    err "Missing required setup param"
-    return 1
-  fi
-  shift && check_extra_args $* || return 1
-  get_setups
-  array_contains $setup ${SETUPS[*]}
-  if [[ $? == 1 ]]; then
-    err "$setup is not a valid setup"
-    return 1
-  fi
-  get_packages $setup &&
-  echo ${PACKAGES[*]}
+hostname() {
+  [[ -f /etc/hostname ]] && cat /etc/hostname
 }
 
 path_relative_to_dir() {
@@ -150,47 +105,65 @@ path_relative_to_dir() {
   echo ${substr}
 }
 
-#
-# Action: ls
-# List dotfiles paths
-#
-ls() {
-  SETUP=$1
-  shift
-  if [[ -z $SETUP ]]; then
-    err "Missing required setup param"
-    return 1
-  fi
-  get_setups &&
+check_setup() {
+  SETUP=${OPTION_SETUP:-$(hostname)}
   array_contains $SETUP ${SETUPS[*]}
   if [[ $? == 1 ]]; then
     err "$SETUP is not a valid setup"
     return 1
   fi
-  local ls_package=()
-  if [[ -n $1 ]]; then
-    get_packages $SETUP
-    local pkg=
-    while [[ $# > 0 ]]; do
-      pkg=$1
-      shift
-      array_contains $pkg ${PACKAGES[*]}
-      if [[ $? == 1 ]]; then
-        err "$pkg is not a valid package"
-        return 1
-      fi
-      ls_packages[${#ls_packages}]=$pkg
-    done
-  else
-    get_packages $SETUP
-    ls_packages=${PACKAGES[*]}
+}
+
+print_help_and_exit() {
+  help
+  exit ${1:-99}
+}
+
+arrayify() {
+  tr ',' ' ' <<< $1
+}
+
+read_options() {
+  local optstring=${1}
+  shift
+  while getopts ${optstring} optname; do
+    case ${optname} in
+      s)  OPTION_SETUP="$OPTARG";;
+      p)  OPTION_PACKAGES=($(arrayify "$OPTARG"));;
+      f)  OPTION_FORCE=1;;
+      d)  OPTION_DRYRUN=1;;
+      ?)  echo "Unknown option : $optname"
+    esac
+  done
+  shift $(($OPTIND - 1))
+  REST_ARGS=${*}
+}
+
+check_packages_validity() {
+  local pos_params=(${*})
+  for ((p_idx=0; p_idx<$#; p_idx++)); do
+    local pkg=${pos_params[$p_idx]}
+    array_contains $pkg ${PACKAGES[*]}
+    if [[ $? == 1 ]]; then
+      err "$pkg is not a valid package"
+      return 1
+    fi
+  done
+}  
+
+check_package() {
+  if [[ -z $PACKAGE ]]; then
+    err "Missing required package param"
+    return 1
   fi
+}
+
+get_files_in_repo() {
   local current_dir=
-  local lsed_items=()
   local pkg_dir=
   local ls_rec_output=()
   local tmp=
-  for package in ${ls_packages[*]}; do
+  for package in $*; do
     pkg_dir="${CONFIG[REPO_PATH]}/${SETUP}/$package"
     ls_rec_output=($(command ls -RAB $pkg_dir))
     for ls_rec_item in ${ls_rec_output[*]}; do
@@ -199,66 +172,191 @@ ls() {
         current_dir=${ls_rec_item:0:$tmp}
       else
         tmp="${current_dir}/${ls_rec_item}"
-        lsed_items[${#lsed_items[*]}]=${tmp:${#pkg_dir}+1}
+        FILES_IN_REPO_PATH[${#FILES_IN_REPO_PATH[*]}]=${tmp:${#pkg_dir}+1}
+        FILES_IN_REPO_PACKAGE[${#FILES_IN_REPO_PACKAGE[*]}]=${package}
       fi
     done
   done  
-  echo ${lsed_items[*]} | tr ' ' \\n | sort -u
 }
 
-#
-# Action: track
-# Copies one or many files from the HOME dir to a specific package and setup in the repo.
-#
-track() {
-  SETUP=$1
-  if [[ -z $SETUP ]]; then
-    err "Missing required setup param"
-    return 1
-  fi
-  get_setups &&
-  array_contains $SETUP ${SETUPS[*]}
-  if [[ $? == 1 ]]; then
-    err "$SETUP is not a valid setup"
-    return 1
-  fi
-  shift
-  PACKAGE=$1
-  if [[ -z $PACKAGE ]]; then
-    err "Missing required package param"
-    return 1
-  fi
-  shift
-  FILES=($@)
-  REL_FILES=()
-  DEST_DIR="${CONFIG[REPO_PATH]}/$SETUP/$PACKAGE"
-  if [[ $# == 0 ]]; then
+check_files() {
+  if [[ ${#FILES} == 0 ]]; then
     err "No files were provided"
     return 1
   fi
-  local REL_FILE
-  for file in ${FILES[@]}; do
+  for ((i=0;i<${#FILES[@]};i++)); do
+    local file=${FILES[$i]}
     if ! ([[ -f $file ]] || [[ -d $file ]]); then
       err "$file is neither a file nor a directory"
       return 1
     fi
-    REL_FILE="$(path_relative_to_dir $HOME $file)" || return $?
-    REL_FILES[${#REL_FILES[@]}]="$REL_FILE"
-  done
-  local track_source
-  local track_target
-  for ((i=0;i<${#FILES[@]};i++)); do
-    track_source=$(realpath -s "${FILES[$i]}")
-    track_target=$(dirname "${DEST_DIR}/${REL_FILES[$i]}")
-    mkdir -p "${track_target}" &&
-    cp -rd "$track_source" "$track_target" &&
-    echo "Copied ${track_source} to ${track_target} ..."
+    local rel_file="$(path_relative_to_dir $HOME $file)" || return $?
   done
 }
 
-#
+check_files_in_repo() {
+  if [[ ${#FILES} == 0 ]]; then
+    err "No files were provided"
+    return 1
+  fi
+  for ((i=0;i<${#FILES[@]};i++)); do
+    local file=${FILES[$i]}
+    if ! ([[ -f $file ]] || [[ -d $file ]]); then
+      err "$file is neither a file nor a directory"
+      return 1
+    fi
+    local rel_file="$(path_relative_to_dir $HOME $file)" || return $?
+    for ((p=0; p<${#FILES_IN_REPO_PATH[*]};p++)); do
+      if [[ ${FILES_IN_REPO_PATH[$p]} == $rel_file ]]; then
+        return 0
+      fi
+    done
+    err "$rel_file isn't tracked yet"
+    return 1
+  done
+}
+
+# Print given filepaths, one on each line
+list_files() {
+  echo ${*} | tr ' ' \\n | sort -u
+}  
+
+get_file_package() {
+  local rel_file="$(path_relative_to_dir $HOME ${1})"
+  local target_package
+  for ((p=0; p<${#FILES_IN_REPO_PATH[*]};p++)); do
+    if [[ ${FILES_IN_REPO_PATH[$p]} == $rel_file ]]; then
+      target_package=${FILES_IN_REPO_PACKAGE[$p]}
+    fi
+  done
+  echo "$target_package"
+}  
+
+track_file() {
+  local dest_dir="${CONFIG[REPO_PATH]}/$SETUP/$PACKAGE" &&
+  local pkg="${1}" &&
+  local check_if_in_other_pkg=${2:-0} &&
+  local file="${3}" &&
+  local rel_file="$(path_relative_to_dir $HOME $file)" &&
+  local track_source=$(realpath -s "$file") &&
+  local track_target=$(dirname "${dest_dir}/${rel_file}") &&
+  if [[ $check_if_in_other_pkg == 1 ]]; then
+    get_packages ${SETUP} &&
+    get_files_in_repo ${PACKAGES[*]} &&
+    local other_package=$(get_file_package $file) &&
+    if [[ ! $other_package == $pkg ]]; then
+      err "File is already tracked in other package ($other_package)"
+      return 4
+    fi
+  fi &&
+  mkdir -p "${track_target}" &&
+  cp -rd "$track_source" "$track_target" &&
+  echo "Copied ${track_source} to ${track_target} ..."
+}
+
+
+## ACTIONS ##
+
+# Action: help
+# Displays usage
+help() {
+  cat << EOF
+dotfiles management utility
+
+Usage
+  dotfilesctl setups
+  dotfilesctl packages [-s <setup>]
+  dotfilesctl ls [-s <setup>] [-p <package>...]
+  dotfilesctl track [-s <setup>] <package> <file>...
+  dotfilesctl add [-s <setup>] <file>...
+  dotfilesctl deploy [-s <setup>] [-p <package>...] [-e <package>...] [-f]
+  dotfilesctl checkout [-f] <file>...
+  dotfilesctl backups
+  dotfilesctl clone [-p <package>...] [-e <package>...] <source_setup> <target_setup>
+  dotfilesctl [help [action]]
+
+When <setup> is not provided, hostname is read instead, from /etc/hostname.
+EOF
+}
+
+# Action: list-setups
+# List available setups
+setups() {
+  check_extra_args $* &&
+  get_setups &&
+  echo $SETUPS
+}
+
+# Action: list-packages
+# List available packages in given setup
+packages() {
+  read_options "s:" $* &&
+  set -- ${REST_ARGS} &&
+  check_extra_args $* &&
+  get_setups &&
+  check_setup &&
+  get_packages $SETUP &&
+  echo ${PACKAGES[*]}
+}
+
+# Action: ls
+# List dotfiles paths
+ls() {
+  local ls_packages=()
+  read_options "s:p:" $* &&
+  set -- ${REST_ARGS} &&
+  check_extra_args $* &&
+  get_setups &&
+  check_setup || return $?
+  if [[ ${#OPTION_PACKAGES[*]} > 0 ]]; then
+    get_packages $SETUP
+    check_packages_validity ${OPTION_PACKAGES[*]} &&
+    ls_packages=${OPTION_PACKAGES[*]}
+  else
+    get_packages $SETUP &&
+    ls_packages=${PACKAGES[*]}
+  fi
+  get_files_in_repo ${ls_packages[*]} &&
+  list_files ${FILES_IN_REPO_PATH[*]}
+}
+
+# Action: track
+# Copies one or many files from the HOME dir to a specific package and setup in the repo.
+track() {
+  read_options "s:d" $* &&
+  set -- ${REST_ARGS} &&
+  get_setups &&
+  check_setup &&
+  PACKAGE=$1 &&
+  shift &&
+  get_packages $SETUP &&
+  check_package &&
+  FILES=($@) &&
+  check_files &&
+  for file in ${FILES[@]}; do
+    track_file "${PACKAGE}" 1 "$file"
+  done
+}
+
+# Action: add
+# Does the same as track on files that are already tracked
+# thus it's not necessary to provide the package.
+add() {
+  read_options "s:" $* &&
+  set -- ${REST_ARGS} &&
+  get_setups &&
+  check_setup &&
+  FILES=($@) &&
+  get_packages ${SETUP} &&
+  get_files_in_repo ${PACKAGES[*]} &&
+  check_files_in_repo &&
+  for file in ${FILES[@]}; do
+    local pkg=$(get_file_package "${file}") &&
+    track_file "${pkg}" 0 "${file}" 
+  done
+}
+
 # Entry point
-#
 main() {
   # Read config file
   read_config
@@ -267,16 +365,15 @@ main() {
   shift
   case $ACTION in
     config | help)
-      $ACTION $@ || (help && exit 1)
+      $ACTION $@ || print_help_and_exit $?
       ;;
     setups | packages | ls | track | add | checkout | deploy | backups | clone | config)
       check_repo_path &&
-      $ACTION $@ || (help; exit 1)
+      $ACTION $@ || print_help_and_exit $?
       ;;
     *)
       err "$ACTION is not a valid action."
-      help
-      exit 1
+      print_help_and_exit 2
       ;;
   esac
 }
