@@ -180,32 +180,32 @@ get_files_in_repo() {
 }
 
 check_files() {
-  if [[ ${#FILES} == 0 ]]; then
+  local files=$@
+  if [[ ${#files} == 0 ]]; then
     err "No files were provided"
     return 1
   fi
-  for ((i=0;i<${#FILES[@]};i++)); do
-    local file=${FILES[$i]}
+  for file in $files; do
     if ! ([[ -f $file ]] || [[ -d $file ]]); then
       err "$file is neither a file nor a directory"
       return 1
-    fi
-    local rel_file="$(path_relative_to_dir $HOME $file)" || return $?
+    fi &&
+    path_relative_to_dir $HOME $file
   done
 }
 
 check_files_in_repo() {
-  if [[ ${#FILES} == 0 ]]; then
+  local files=$@
+  if [[ ${#files} == 0 ]]; then
     err "No files were provided"
     return 1
   fi
-  for ((i=0;i<${#FILES[@]};i++)); do
-    local file=${FILES[$i]}
+  for file in $files; do
     if ! ([[ -f $file ]] || [[ -d $file ]]); then
       err "$file is neither a file nor a directory"
       return 1
     fi
-    local rel_file="$(path_relative_to_dir $HOME $file)" || return $?
+    local rel_file="$(path_relative_to_dir $HOME $file)" &&
     for ((p=0; p<${#FILES_IN_REPO_PATH[*]};p++)); do
       if [[ ${FILES_IN_REPO_PATH[$p]} == $rel_file ]]; then
         return 0
@@ -390,9 +390,8 @@ track() {
   shift &&
   get_packages $SETUP &&
   check_package &&
-  FILES=($@) &&
-  check_files &&
-  for file in ${FILES[@]}; do
+  check_files $@ &&
+  for file in $@; do
     track_file "${PACKAGE}" 1 "$file"
   done
 }
@@ -405,11 +404,10 @@ add() {
   set -- ${REST_ARGS} &&
   get_setups &&
   check_setup &&
-  FILES=($@) &&
   get_packages ${SETUP} &&
   get_files_in_repo ${PACKAGES[*]} &&
-  check_files_in_repo &&
-  for file in ${FILES[@]}; do
+  check_files_in_repo $@ &&
+  for file in $@; do
     local pkg=$(get_file_package "${file}") &&
     track_file "${pkg}" 0 "${file}" 
   done
