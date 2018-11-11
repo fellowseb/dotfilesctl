@@ -190,7 +190,7 @@ check_files() {
       err "$file is neither a file nor a directory"
       return 1
     fi &&
-    path_relative_to_dir $HOME $file
+    path_relative_to_dir $HOME $file > /dev/null
   done
 }
 
@@ -200,12 +200,12 @@ check_files_in_repo() {
     err "No files were provided"
     return 1
   fi
-  for file in $files; do
+  for rel_file in $files; do
+    local file=$HOME/$rel_file
     if ! ([[ -f $file ]] || [[ -d $file ]]); then
       err "$file is neither a file nor a directory"
       return 1
     fi
-    local rel_file="$(path_relative_to_dir $HOME $file)" &&
     for ((p=0; p<${#FILES_IN_REPO_PATH[*]};p++)); do
       if [[ ${FILES_IN_REPO_PATH[$p]} == $rel_file ]]; then
         return 0
@@ -267,22 +267,27 @@ get_file_package() {
       target_package=${FILES_IN_REPO_PACKAGE[$p]}
     fi
   done
+  if [[ -z $target_package ]]; then
+    err "File $1 is not in a package"
+    return 1
+  fi
   echo "$target_package"
 }  
 
 track_file() {
-  local dest_dir="${CONFIG[REPO_PATH]}/$SETUP/$PACKAGE" &&
   local pkg="${1}" &&
+  local dest_dir="${CONFIG[REPO_PATH]}/$SETUP/$pkg" &&
   local check_if_in_other_pkg=${2:-0} &&
   local file="${3}" &&
   local rel_file="$(path_relative_to_dir $HOME $file)" &&
   local track_source=$(realpath -s "$file") &&
   local track_target=$(dirname "${dest_dir}/${rel_file}") &&
+  local other_package
   if [[ $check_if_in_other_pkg == 1 ]]; then
     get_packages ${SETUP} &&
     get_files_in_repo ${PACKAGES[*]} &&
-    local other_package=$(get_file_package $rel_file) &&
-    if [[ ! $other_package == $pkg ]]; then
+    other_package=$(get_file_package $rel_file 2> /dev/null)
+    if [[ $? == 0 ]] && [[ ! $other_package == $pkg ]]; then
       err "File is already tracked in other package ($other_package)"
       return 4
     fi
@@ -290,6 +295,45 @@ track_file() {
   mkdir -p "${track_target}" &&
   cp -rd "$track_source" "$track_target" &&
   echo "Copied ${track_source} to ${track_target} ..."
+}
+
+diff_file() {
+  local local_file="$HOME/$1" &&
+  local repo_file="${CONFIG[REPO_PATH]}/$SETUP/$2/$1" &&
+  if [[ ! -e $local_file ]]; then
+    echo "Local file is absent"
+  elif [[ -f $local_file ]] && [[ -d $repo_file ]]; then
+    echo "Local file is a file"
+    echo "Repo file is a directory"
+  elif [[ -d $local_file ]] && [[ -f $repo_file ]]; then
+    echo "Local file is a directory"
+    echo "Repo file is a file"
+  elif [[ -f $local_file ]]; then
+    if [[ ! -h $local_file ]] && [[ -h $repo_file ]]; then
+      echo "Local file is a regular file"
+      echo "Repo file is a symbolic link"
+    elif [[ -h $local_file ]] && [[ ! -h $repo_file ]]; then
+      echo "Local file is a symbolic link"
+      echo "Repo file is a regular file"
+    elif [[ ! -h $local_file ]]; then
+      local local_file_hash=$(sha1sum $local_file | cut -d' ' -f1) &&
+      local repo_file_hash=$(sha1sum $repo_file | cut -d' ' -f1) &&
+      if [[ ! $local_file_hash == $repo_file_hash ]]; then
+        command diff $repo_file $local_file --color=auto || return 0
+      else
+        echo "Local and repo files are identical"
+      fi
+    else #symbolik links
+      local local_file_link=$(readlink $local_file)
+      local repo_file_link=$(readlink $repo_file)
+      if [[ ! $local_file_link == $repo_file_link ]]; then
+        echo "Local symbolic link: $local_file_link"
+        echo "Repo symbolic link: $repo_file_link"
+      else
+        echo "Local and repo symbolic links are identical"
+      fi
+    fi
+  fi
 }
 
 
@@ -310,6 +354,7 @@ Usage
   dotfilesctl add [-s <setup>] <file>...
   dotfilesctl deploy [-s <setup>] [-p <package>...] [-e <package>...] [-f]
   dotfilesctl checkout [-f] <file>...
+  dotfilesctl diff <file>
   dotfilesctl backups
   dotfilesctl clone [-p <package>...] [-e <package>...] <source_setup> <target_setup>
   dotfilesctl [help [action]]
@@ -407,10 +452,28 @@ add() {
   get_packages ${SETUP} &&
   get_files_in_repo ${PACKAGES[*]} &&
   check_files_in_repo $@ &&
-  for file in $@; do
-    local pkg=$(get_file_package "${file}") &&
-    track_file "${pkg}" 0 "${file}" 
+  local pkg= &&
+  for rel_file in $@; do
+    pkg=$(get_file_package ${rel_file}) &&
+    track_file "${pkg}" 0 "$HOME/${rel_file}" 
   done
+}
+
+# Action: diff
+# Display diff between local and repo file for given file
+diff() {
+  read_options "s:" $* &&
+  set -- ${REST_ARGS} &&
+  local rel_file=$1 &&
+  shift &&
+  check_extra_args $* &&
+  get_setups &&
+  check_setup &&
+  get_packages $SETUP &&
+  get_files_in_repo ${PACKAGES[*]} &&
+  check_files_in_repo $rel_file &&
+  local package=$(get_file_package $rel_file) &&
+  diff_file $rel_file $package
 }
 
 # Entry point
@@ -424,7 +487,7 @@ main() {
     status | config | help)
       $ACTION $@ || print_help_and_exit $?
       ;;
-    setups | packages | ls | track | add | checkout | deploy | backups | clone | config)
+    setups | packages | ls | track | add | checkout | deploy | backups | clone | config | diff)
       check_repo_path &&
       $ACTION $@ || print_help_and_exit $?
       ;;
