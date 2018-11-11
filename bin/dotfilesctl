@@ -222,10 +222,9 @@ list_files() {
 }  
 
 get_file_package() {
-  local rel_file="$(path_relative_to_dir $HOME ${1})"
   local target_package
   for ((p=0; p<${#FILES_IN_REPO_PATH[*]};p++)); do
-    if [[ ${FILES_IN_REPO_PATH[$p]} == $rel_file ]]; then
+    if [[ ${FILES_IN_REPO_PATH[$p]} == $1 ]]; then
       target_package=${FILES_IN_REPO_PACKAGE[$p]}
     fi
   done
@@ -243,7 +242,7 @@ track_file() {
   if [[ $check_if_in_other_pkg == 1 ]]; then
     get_packages ${SETUP} &&
     get_files_in_repo ${PACKAGES[*]} &&
-    local other_package=$(get_file_package $file) &&
+    local other_package=$(get_file_package $rel_file) &&
     if [[ ! $other_package == $pkg ]]; then
       err "File is already tracked in other package ($other_package)"
       return 4
