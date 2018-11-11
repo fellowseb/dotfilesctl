@@ -306,7 +306,7 @@ ls() {
   set -- ${REST_ARGS} &&
   check_extra_args $* &&
   get_setups &&
-  check_setup || return $?
+  check_setup &&
   if [[ ${#OPTION_PACKAGES[*]} > 0 ]]; then
     get_packages $SETUP
     check_packages_validity ${OPTION_PACKAGES[*]} &&
@@ -314,7 +314,7 @@ ls() {
   else
     get_packages $SETUP &&
     ls_packages=${PACKAGES[*]}
-  fi
+  fi &&
   get_files_in_repo ${ls_packages[*]} &&
   list_files ${FILES_IN_REPO_PATH[*]}
 }
