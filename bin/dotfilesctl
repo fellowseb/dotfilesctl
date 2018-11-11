@@ -221,6 +221,45 @@ list_files() {
   echo ${*} | tr ' ' \\n | sort -u
 }  
 
+# Print file status
+get_file_status() {
+  local local_file="$HOME/$1" &&
+  local repo_file="${CONFIG[REPO_PATH]}/$SETUP/$2/$1" &&
+  if [[ ! -e $local_file ]]; then
+    echo "  not deployed: $1"
+  elif [[ -f $local_file ]] && [[ -d $repo_file ]]; then
+    echo "  diff (not a dir): $1"
+  elif [[ -d $local_file ]] && [[ -f $repo_file ]]; then
+    echo "  diff (not a file): $1"
+  elif [[ -f $local_file ]]; then
+    if [[ ! -h $local_file ]] && [[ -h $repo_file ]]; then
+      echo "  diff (not a symbolik link): $1"
+    elif [[ -h $local_file ]] && [[ ! -h $repo_file ]]; then
+      echo "  diff (not a regular file): $1"
+    elif [[ ! -h $local_file ]]; then
+      local local_file_hash=$(sha1sum $local_file | cut -d' ' -f1) &&
+      local repo_file_hash=$(sha1sum $repo_file | cut -d' ' -f1) &&
+      if [[ ! $local_file_hash == $repo_file_hash ]]; then
+        echo "  diff: $1"
+      fi
+    else #symbolik links
+      local local_file_link=$(readlink $local_file)
+      local repo_file_link=$(readlink $repo_file)
+      if [[ ! $local_file_link == $repo_file_link ]]; then
+        echo "  diff (link diff): $1"
+      fi
+    fi
+  fi
+}
+
+# Print files status
+get_files_status() {
+  echo "Local/repo files changes:" &&
+  for file in ${*}; do
+    get_file_status "$file" $(get_file_package "$file")
+  done
+}
+
 get_file_package() {
   local target_package
   for ((p=0; p<${#FILES_IN_REPO_PATH[*]};p++)); do
@@ -263,6 +302,7 @@ help() {
 dotfiles management utility
 
 Usage
+  dotfilesctl status
   dotfilesctl setups
   dotfilesctl packages [-s <setup>]
   dotfilesctl ls [-s <setup>] [-p <package>...]
@@ -277,6 +317,26 @@ Usage
 When <setup> is not provided, hostname is read instead, from /etc/hostname.
 EOF
 }
+
+# Action: status
+# Give basic info about configuration and lists diffs between repo and local files
+status() {
+  echo "Configured target repository: ${CONFIG[REPO_PATH]:-None}" &&
+  local ls_packages=() &&
+  read_options "s:" $* &&
+  echo "Configured setup: ${CONFIG[SETUP]:-None}" &&
+  set -- ${REST_ARGS} &&
+  check_extra_args $* &&
+  if [[ ! -z ${CONFIG[REPO_PATH]} ]]; then
+    check_repo_path &&
+    get_setups &&
+    check_setup &&
+    get_packages $SETUP &&
+    ls_packages=${PACKAGES[*]} &&
+    get_files_in_repo ${ls_packages[*]} &&
+    get_files_status ${FILES_IN_REPO_PATH[*]}
+  fi
+} 
 
 # Action: list-setups
 # List available setups
@@ -363,7 +423,7 @@ main() {
   local ACTION=${1:-help}
   shift
   case $ACTION in
-    config | help)
+    status | config | help)
       $ACTION $@ || print_help_and_exit $?
       ;;
     setups | packages | ls | track | add | checkout | deploy | backups | clone | config)
