@@ -352,11 +352,11 @@ Usage
   dotfilesctl ls [-s <setup>] [-p <package>...]
   dotfilesctl track [-s <setup>] <package> <file>...
   dotfilesctl add [-s <setup>] <file>...
-  dotfilesctl deploy [-s <setup>] [-p <package>...] [-e <package>...] [-f]
+  dotfilesctl deploy [-s <setup>] [-p <package>...] [-f]
   dotfilesctl checkout [-f] <file>...
   dotfilesctl diff <file>
   dotfilesctl backups
-  dotfilesctl clone [-p <package>...] [-e <package>...] <source_setup> <target_setup>
+  dotfilesctl clone [-p <package>...] <source_setup> <target_setup>
   dotfilesctl [help [action]]
 
 When <setup> is not provided, hostname is read instead, from /etc/hostname.
