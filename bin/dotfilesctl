@@ -6,6 +6,7 @@
 OPTION_SETUP=
 OPTION_PACKAGES=()
 OPTION_FORCE=0
+OPTION_DRYRUN=0
 REST_ARGS=
 
 SETUPS=()
@@ -172,8 +173,10 @@ get_files_in_repo() {
         current_dir=${ls_rec_item:0:$tmp}
       else
         tmp="${current_dir}/${ls_rec_item}"
-        FILES_IN_REPO_PATH[${#FILES_IN_REPO_PATH[*]}]=${tmp:${#pkg_dir}+1}
-        FILES_IN_REPO_PACKAGE[${#FILES_IN_REPO_PACKAGE[*]}]=${package}
+        if [[ ! -d $tmp ]]; then
+          FILES_IN_REPO_PATH[${#FILES_IN_REPO_PATH[*]}]=${tmp:${#pkg_dir}+1}
+          FILES_IN_REPO_PACKAGE[${#FILES_IN_REPO_PACKAGE[*]}]=${package}
+        fi
       fi
     done
   done  
@@ -221,6 +224,21 @@ list_files() {
   echo ${*} | tr ' ' \\n | sort -u
 }  
 
+# Checks whether two files have identical content
+compare_files() {
+  if [[ -f $1 ]] && [[ -f $2 ]]; then
+    local lhs_hash=$(sha1sum $1 | cut -d' ' -f1) &&
+    local rhs_hash=$(sha1sum $2 | cut -d' ' -f1) &&
+    [[ $lhs_hash == $rhs_hash ]]
+  elif [[ -h $1 ]] && [[ -h $2 ]]; then
+    local lhs_link=$(readlink $1)
+    local rhs_link=$(readlink $2)
+    [[ $lhs_link == $rhs_link ]]
+  else
+    return 1
+  fi
+}
+
 # Print file status
 get_file_status() {
   local local_file="$HOME/$1" &&
@@ -237,15 +255,11 @@ get_file_status() {
     elif [[ -h $local_file ]] && [[ ! -h $repo_file ]]; then
       echo "  diff (not a regular file): $1"
     elif [[ ! -h $local_file ]]; then
-      local local_file_hash=$(sha1sum $local_file | cut -d' ' -f1) &&
-      local repo_file_hash=$(sha1sum $repo_file | cut -d' ' -f1) &&
-      if [[ ! $local_file_hash == $repo_file_hash ]]; then
+      if ! compare_files $local_file $repo_file; then
         echo "  diff: $1"
       fi
     else #symbolik links
-      local local_file_link=$(readlink $local_file)
-      local repo_file_link=$(readlink $repo_file)
-      if [[ ! $local_file_link == $repo_file_link ]]; then
+      if ! compare_files $local_file $repo_file; then
         echo "  diff (link diff): $1"
       fi
     fi
@@ -293,7 +307,7 @@ track_file() {
     fi
   fi &&
   mkdir -p "${track_target}" &&
-  cp -rd "$track_source" "$track_target" &&
+  cp -rdP "$track_source" "$track_target" &&
   echo "Copied ${track_source} to ${track_target} ..."
 }
 
@@ -316,23 +330,83 @@ diff_file() {
       echo "Local file is a symbolic link"
       echo "Repo file is a regular file"
     elif [[ ! -h $local_file ]]; then
-      local local_file_hash=$(sha1sum $local_file | cut -d' ' -f1) &&
-      local repo_file_hash=$(sha1sum $repo_file | cut -d' ' -f1) &&
-      if [[ ! $local_file_hash == $repo_file_hash ]]; then
+      if ! compare_files $local_file $repo_file; then
         command diff $repo_file $local_file --color=auto || return 0
       else
         echo "Local and repo files are identical"
       fi
     else #symbolik links
-      local local_file_link=$(readlink $local_file)
-      local repo_file_link=$(readlink $repo_file)
-      if [[ ! $local_file_link == $repo_file_link ]]; then
+      if ! compare_files $local_file $repo_file; then
+        local local_file_link=$(readlink $local_file)
+        local repo_file_link=$(readlink $repo_file)
         echo "Local symbolic link: $local_file_link"
         echo "Repo symbolic link: $repo_file_link"
       else
         echo "Local and repo symbolic links are identical"
       fi
     fi
+  fi
+}
+
+generate_deployment_id() {
+  local uuid=
+  until [[ ! -z $uuid ]] && [[ ! -e "${XDG_DATA_HOME:-$HOME/.local/share}"/dotfilesctl/deployments/$uuid ]]; do
+    uuid=$(uuidgen -r | cut -d'-' -f1)
+  done
+  echo $uuid
+}
+
+deploy_file() {
+  local deployment_dir="$1"
+  local force=${4:-0}
+  local dry_run=${5:-0}
+  local source_file=${CONFIG[REPO_PATH]}/$SETUP/$2/$3
+  local target_file=$HOME/$3
+  local backup_archive=$deployment_dir/backup.tar
+  echo -n "  $3... " &&
+  if ! compare_files $target_file $source_file; then
+    if [[ $dry_run == 0 ]]; then
+        mkdir -p $deployment_dir
+    fi &&
+    if [[ -e $target_file ]]; then
+      if [[ $dry_run != 0 ]]; then
+        echo -n "[DRYRUN]"
+      elif [[ -e $backup_archive ]]; then
+        tar -rf  $backup_archive -C $HOME $3
+      else
+        tar -cf $backup_archive -C $HOME $3
+      fi &&
+      echo -n "BACKUP ✓ "
+    fi &&
+    if [[ $dry_run != 0 ]]; then
+      echo -n "[DRYRUN]"
+    else
+      cp -P $source_file $target_file
+    fi &&
+    echo "DEPLOYED ✓"
+  else
+    echo "NOCHANGE ✓"
+  fi
+}
+
+deploy_files() {
+  local package=
+  local deployment_id=
+  local force=${1:-0}
+  local dry_run=${2:-0}
+  local deployment_dir=
+  local backup_archive=
+  shift 2 &&
+  deployment_id=$(generate_deployment_id) &&
+  deployment_dir="${XDG_DATA_HOME:-$HOME/.local/share}"/dotfilesctl/deployments/$deployment_id &&
+  backup_archive=$deployment_dir/backup.tar &&
+  for file in $*; do
+    package=$(get_file_package $file 2> /dev/null) &&
+    deploy_file $deployment_dir $package $file $force $dry_run
+  done &&
+  if [[ $dry_run == 0 ]] && [[ -e $backup_archive ]]; then
+    gzip $backup_archive &&
+    echo "Backup archive: $backup_archive.gz"
   fi
 }
 
@@ -346,17 +420,16 @@ help() {
 dotfiles management utility
 
 Usage
-  dotfilesctl status
+  dotfilesctl status [-s <setup>]
   dotfilesctl setups
   dotfilesctl packages [-s <setup>]
   dotfilesctl ls [-s <setup>] [-p <package>...]
   dotfilesctl track [-s <setup>] <package> <file>...
   dotfilesctl add [-s <setup>] <file>...
-  dotfilesctl deploy [-s <setup>] [-p <package>...] [-f]
-  dotfilesctl checkout [-f] <file>...
-  dotfilesctl diff <file>
+  dotfilesctl deploy [-s <setup>] [-p <package1>,<package2>...] [-d]
+  dotfilesctl checkout [-s <setup>] [-d] <file>...
+  dotfilesctl diff [-s <setup>] <file>
   dotfilesctl backups
-  dotfilesctl clone [-p <package>...] <source_setup> <target_setup>
   dotfilesctl [help [action]]
 
 When <setup> is not provided, hostname is read instead, from /etc/hostname.
@@ -462,18 +535,58 @@ add() {
 # Action: diff
 # Display diff between local and repo file for given file
 diff() {
+  local package=
+  local rel_file=
   read_options "s:" $* &&
   set -- ${REST_ARGS} &&
-  local rel_file=$1 &&
-  shift &&
-  check_extra_args $* &&
+  rel_file=$1 &&
   get_setups &&
   check_setup &&
   get_packages $SETUP &&
   get_files_in_repo ${PACKAGES[*]} &&
   check_files_in_repo $rel_file &&
-  local package=$(get_file_package $rel_file) &&
+  package=$(get_file_package $rel_file) &&
+  shift &&
+  check_extra_args $* &&
   diff_file $rel_file $package
+}
+
+# Action: deploy
+# Copies files from repo to the $HOME dir, where they belong
+deploy() {
+  local ls_packages=()
+  read_options "s:p:fd" $* &&
+  set -- ${REST_ARGS} &&
+  check_extra_args $* &&
+  get_setups &&
+  check_setup &&
+  get_packages $SETUP &&
+  if [[ ${#OPTION_PACKAGES[*]} > 0 ]]; then
+    check_packages_validity ${OPTION_PACKAGES[*]} &&
+    ls_packages=${OPTION_PACKAGES[*]}
+  else
+    ls_packages=${PACKAGES[*]}
+  fi &&
+  get_files_in_repo ${ls_packages[*]} &&
+  deploy_files ${OPTION_FORCE} ${OPTION_DRYRUN} ${FILES_IN_REPO_PATH[*]}
+}
+
+# Action: checkout
+checkout() {
+  read_options "s:fd" $* &&
+  set -- ${REST_ARGS} &&
+  get_setups &&
+  check_setup &&
+  get_packages ${SETUP} &&
+  get_files_in_repo ${PACKAGES[*]} &&
+  check_files_in_repo $@ &&
+  deploy_files ${OPTION_FORCE} ${OPTION_DRYRUN} $*
+}
+
+# Action: backups
+# List backups IDs
+backups() {
+  command ls "${XDG_DATA_HOME:-$HOME/.local/share}/dotfilesctl/deployments/"
 }
 
 # Entry point
@@ -487,7 +600,7 @@ main() {
     status | config | help)
       $ACTION $@ || print_help_and_exit $?
       ;;
-    setups | packages | ls | track | add | checkout | deploy | backups | clone | config | diff)
+    setups | packages | ls | track | add | checkout | deploy | backups | config | diff)
       check_repo_path &&
       $ACTION $@ || print_help_and_exit $?
       ;;
