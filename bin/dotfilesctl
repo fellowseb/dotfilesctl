@@ -349,11 +349,7 @@ diff_file() {
 }
 
 generate_deployment_id() {
-  local uuid=
-  until [[ ! -z $uuid ]] && [[ ! -e "${XDG_DATA_HOME:-$HOME/.local/share}"/dotfilesctl/deployments/$uuid ]]; do
-    uuid=$(uuidgen -r | cut -d'-' -f1)
-  done
-  echo $uuid
+  date +%Y%m%d%H%M%S
 }
 
 deploy_file() {
