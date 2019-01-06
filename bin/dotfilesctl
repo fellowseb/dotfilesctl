@@ -387,6 +387,7 @@ deploy_file() {
     if [[ $dry_run != 0 ]]; then
       echo -n "[DRYRUN]"
     else
+      mkdir -p $(dirname ${target_file}) &&
       cp -P $source_file $target_file
     fi &&
     echo "DEPLOYED ✓"
